@@ -290,13 +290,6 @@ export default class OCRPlugin extends Plugin {
     // 3. 将 "\(" 和 "\)" 替换为 "$"
     result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
   
-    // 4. 移除行间公式和行内公式内部的多余 `$` 符号
-    result = result.replace(/\$\$(.*?)\$\$/g, (match, p1) => `$$${p1.replace(/\$/g, '').trim()}$$`);
-    result = result.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.replace(/\$/g, '').trim()}$`);
-  
-    // 5. 处理输入中可能存在的未配对或多余的 `$` 符号
-    result = result.replace(/^\$/, '').replace(/\$$/, '');
-  
     return result;
   }
   
