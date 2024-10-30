@@ -1,6 +1,6 @@
 {
-	"id": "obsdian-sample-plugin",
-	"name": "Xiu sample plugin",
+	"id": "obsdian-Xiu-Formula-OCR",
+	"name": "Xiu Formula OCR",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
 	"description": "Demonstrates some of the capabilities of the Obsidian API.",

@@ -68,7 +68,13 @@ export default class OCRPlugin extends Plugin {
 
     const imagePath = match[1] || match[2];
 
-    const result = await this.processImage(selectedText, imagePath, view.file.path);
+    const currentFilePath = view.file?.path;
+    if (!currentFilePath) {
+      new Notice('无法获取当前文件路径');
+      return;
+    }
+
+    const result = await this.processImage(selectedText, imagePath, currentFilePath);
 
     if (result) {
       // 替换选中的内容为 OCR 结果
@@ -79,6 +85,12 @@ export default class OCRPlugin extends Plugin {
   private async ocrAllImagesInNote(editor: Editor, view: MarkdownView) {
     const content = editor.getValue();
 
+    const currentFilePath = view.file?.path;
+    if (!currentFilePath) {
+      new Notice('无法获取当前文件路径');
+      return;
+    }
+
     // 正则表达式匹配所有图片链接
     const imageLinkRegex = /(!\[\[([^\]]+)\]\])|(!\[[^\]]*\]\(([^)]+)\))/g;
     let match;
@@ -88,7 +100,7 @@ export default class OCRPlugin extends Plugin {
       const fullMatch = match[0];
       const imagePath = match[2] || match[4];
 
-      promises.push(this.processImage(fullMatch, imagePath, view.file.path));
+      promises.push(this.processImage(fullMatch, imagePath, currentFilePath));
     }
 
     const results = await Promise.all(promises);
@@ -146,7 +158,10 @@ export default class OCRPlugin extends Plugin {
       return null;
     }
 
-    return { imageLink, ocrText };
+    // 调用 removeBlanks 函数处理 OCR 结果
+    const processedText = this.removeBlanks(ocrText);
+
+    return { imageLink, ocrText: processedText };
   }
 
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -157,6 +172,14 @@ export default class OCRPlugin extends Plugin {
       binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary);
+  }
+
+  private removeBlanks(input: string): string {
+    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
+    result = result.replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
+    result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
+    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+    return result;
   }
 }
 
