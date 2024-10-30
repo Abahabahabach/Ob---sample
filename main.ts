@@ -278,15 +278,19 @@ export default class OCRPlugin extends Plugin {
 
   
   private removeBlanks(input: string): string {
-   // 删除美元符号前后的空格
-   let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
-   // 将 "\[" 或 "\]" 替换为 "$$"
-   result = result.replace(/\\\[/g, '$$$').replace(/\\\]/g, '$$$');
-   // 将 "\(" 或 "\)" 替换为 "$"
-   result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
-   result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+    // 删除美元符号内的空格
+    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
+    
+    // 将 "\[" 或 "\]" 替换为 "$$"
+    // 使用 '$$$$' 以确保替换为 '$$'
+    result = result.replace(/\\\[/g, '$$$$').replace(/\\\]/g, '$$$$');
+    
+    // 将 "\(" 或 "\)" 替换为 "$"
+    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+    
     return result;
-  }
+ }
+ 
 }
 
 class OCRSettingTab extends PluginSettingTab {
