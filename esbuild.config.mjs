@@ -1,8 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
-import fs from "fs";
-import path from "path";
 
 const banner =
 `/*
@@ -13,52 +11,39 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = (process.argv[2] === "production");
 
-// 设置输出目录
-const outdir = "dist";
-
 const context = await esbuild.context({
-  banner: {
-    js: banner,
-  },
-  entryPoints: ["main.ts"],
-  bundle: true,
-  external: [
-    "obsidian",
-    "electron",
-    "@codemirror/autocomplete",
-    "@codemirror/collab",
-    "@codemirror/commands",
-    "@codemirror/language",
-    "@codemirror/lint",
-    "@codemirror/search",
-    "@codemirror/state",
-    "@codemirror/view",
-    "@lezer/common",
-    "@lezer/highlight",
-    "@lezer/lr",
-    ...builtins,
-  ],
-  format: "cjs",
-  target: "es2018",
-  logLevel: "info",
-  sourcemap: prod ? false : "inline",
-  treeShaking: true,
-  outfile: path.join(outdir, "main.js"),
-  minify: prod,
+	banner: {
+		js: banner,
+	},
+	entryPoints: ["main.ts"],
+	bundle: true,
+	external: [
+		"obsidian",
+		"electron",
+		"@codemirror/autocomplete",
+		"@codemirror/collab",
+		"@codemirror/commands",
+		"@codemirror/language",
+		"@codemirror/lint",
+		"@codemirror/search",
+		"@codemirror/state",
+		"@codemirror/view",
+		"@lezer/common",
+		"@lezer/highlight",
+		"@lezer/lr",
+		...builtins],
+	format: "cjs",
+	target: "es2018",
+	logLevel: "info",
+	sourcemap: prod ? false : "inline",
+	treeShaking: true,
+	outfile: "main.js",
+	minify: prod,
 });
 
-// 创建输出目录（如果不存在）
-if (!fs.existsSync(outdir)) {
-  fs.mkdirSync(outdir);
-}
-
-// 复制静态文件
-fs.copyFileSync("manifest.json", path.join(outdir, "manifest.json"));
-fs.copyFileSync("styles.css", path.join(outdir, "styles.css"));
-
 if (prod) {
-  await context.rebuild();
-  process.exit(0);
+	await context.rebuild();
+	process.exit(0);
 } else {
-  await context.watch();
+	await context.watch();
 }
