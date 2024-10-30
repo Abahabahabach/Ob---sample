@@ -282,15 +282,11 @@ export default class OCRPlugin extends Plugin {
     let result = input;
   
    // 1. 替换 "\[" 和 "\]" 为 "$$"
-   result = result.replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
+   result = result.replace(/\\\[/g, '$$$$').replace(/\\\]/g, '$$$$');
 
    // 2. 替换 "\(" 和 "\)" 为 "$"
    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
 
-   result = result.replace(/(\${1,2})(\s*)(.*?)(\s*)(\${1,2})/g, (match, p1, p2, p3, p4, p5) => {
-    return `${p1}${p3.trim()}${p5}`;
-  });
-  
     return result;
   }
   
