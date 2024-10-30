@@ -1,134 +1,200 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface OCRPluginSettings {
+  appId: string;
+  appKey: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: OCRPluginSettings = {
+  appId: '',
+  appKey: ''
+};
+
+export default class OCRPlugin extends Plugin {
+  settings: OCRPluginSettings;
+
+  async onload() {
+    console.log('Loading OCR Plugin');
+
+    await this.loadSettings();
+
+    this.addCommand({
+      id: 'ocr-selected-image',
+      name: 'OCR Selected Image',
+      editorCallback: async (editor: Editor, view: MarkdownView) => {
+        await this.ocrSelectedImage(editor, view);
+      }
+    });
+
+    this.addCommand({
+      id: 'ocr-all-images',
+      name: 'OCR All Images in Note',
+      editorCallback: async (editor: Editor, view: MarkdownView) => {
+        await this.ocrAllImagesInNote(editor, view);
+      }
+    });
+
+    this.addSettingTab(new OCRSettingTab(this.app, this));
+  }
+
+  onunload() {
+    console.log('Unloading OCR Plugin');
+  }
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+
+  private async ocrSelectedImage(editor: Editor, view: MarkdownView) {
+    const selectedText = editor.getSelection();
+
+    if (!selectedText) {
+      new Notice('请先选中一张图片的链接');
+      return;
+    }
+
+    // 检查选中的文本是否为图片链接
+    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/;
+    const match = selectedText.match(imageLinkRegex);
+
+    if (!match) {
+      new Notice('选中的内容不是有效的图片链接');
+      return;
+    }
+
+    const imagePath = match[1] || match[2];
+
+    const result = await this.processImage(selectedText, imagePath, view.file.path);
+
+    if (result) {
+      // 替换选中的内容为 OCR 结果
+      editor.replaceSelection(result.ocrText);
+    }
+  }
+
+  private async ocrAllImagesInNote(editor: Editor, view: MarkdownView) {
+    const content = editor.getValue();
+
+    // 正则表达式匹配所有图片链接
+    const imageLinkRegex = /(!\[\[([^\]]+)\]\])|(!\[[^\]]*\]\(([^)]+)\))/g;
+    let match;
+    const promises = [];
+
+    while ((match = imageLinkRegex.exec(content)) !== null) {
+      const fullMatch = match[0];
+      const imagePath = match[2] || match[4];
+
+      promises.push(this.processImage(fullMatch, imagePath, view.file.path));
+    }
+
+    const results = await Promise.all(promises);
+
+    // 将内容中的图片链接替换为 OCR 结果
+    let newContent = content;
+    for (const result of results) {
+      if (result) {
+        newContent = newContent.replace(result.imageLink, result.ocrText);
+      }
+    }
+
+    editor.setValue(newContent);
+
+    new Notice('所有图片已处理完成');
+  }
+
+  private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
+    // 获取图片文件
+    const imageFile = this.app.metadataCache.getFirstLinkpathDest(imagePath, currentFilePath);
+
+    if (!imageFile) {
+      new Notice(`无法找到图片文件：${imagePath}`);
+      return null;
+    }
+
+    // 读取图片数据
+    const arrayBuffer = await this.app.vault.readBinary(imageFile);
+    const base64Image = this.arrayBufferToBase64(arrayBuffer);
+
+    // 调用 Mathpix API
+    const response = await fetch('https://api.mathpix.com/v3/text', {
+      method: 'POST',
+      headers: {
+        'app_id': this.settings.appId,
+        'app_key': this.settings.appKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        src: `data:image/png;base64,${base64Image}`,
+        formats: ['text']
+      })
+    });
+
+    if (!response.ok) {
+      new Notice(`OCR 请求失败：${imagePath}`);
+      return null;
+    }
+
+    const result = await response.json();
+    const ocrText = result.text;
+
+    if (!ocrText) {
+      new Notice(`未能识别出文本：${imagePath}`);
+      return null;
+    }
+
+    return { imageLink, ocrText };
+  }
+
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+class OCRSettingTab extends PluginSettingTab {
+  plugin: OCRPlugin;
 
-	async onload() {
-		await this.loadSettings();
+  constructor(app: App, plugin: OCRPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+  display(): void {
+    const { containerEl } = this;
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
+    containerEl.empty();
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+    containerEl.createEl('h2', { text: 'OCR Plugin Settings' });
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
+    new Setting(containerEl)
+      .setName('Mathpix App ID')
+      .setDesc('Your Mathpix API App ID')
+      .addText(text => text
+        .setPlaceholder('Enter your App ID')
+        .setValue(this.plugin.settings.appId)
+        .onChange(async (value) => {
+          this.plugin.settings.appId = value;
+          await this.plugin.saveSettings();
+        }));
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
-
-	onunload() {
-
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+    new Setting(containerEl)
+      .setName('Mathpix App Key')
+      .setDesc('Your Mathpix API App Key')
+      .addText(text => text
+        .setPlaceholder('Enter your App Key')
+        .setValue(this.plugin.settings.appKey)
+        .onChange(async (value) => {
+          this.plugin.settings.appKey = value;
+          await this.plugin.saveSettings();
+        }));
+  }
 }
