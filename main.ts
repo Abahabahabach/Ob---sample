@@ -15,7 +15,9 @@ export default class OCRPlugin extends Plugin {
 
   private autoOCRMode: boolean = false;
   private ribbonIconEl: HTMLElement;
-  private pasteEvent: EventRef | null = null;
+  private processedImages: Set<string> = new Set();
+  private debounceTimer: number | null = null;
+  private changeEventRef: EventRef | null = null;
 
   async onload() {
     console.log('Loading OCR Plugin');
@@ -51,7 +53,7 @@ export default class OCRPlugin extends Plugin {
 
   onunload() {
     console.log('Unloading OCR Plugin');
-    // 确保注销粘贴事件监听器
+    // 在插件卸载时，确保注销事件监听器
     this.stopListeningForPaste();
   }
 
@@ -87,90 +89,85 @@ export default class OCRPlugin extends Plugin {
   }
 
   private startListeningForPaste() {
-    this.pasteEvent = this.app.workspace.on('editor-paste', this.handlePasteEvent.bind(this));
+    this.changeEventRef = this.app.workspace.on('editor-change', this.handleEditorChange.bind(this));
   }
 
   private stopListeningForPaste() {
-    if (this.pasteEvent) {
-      this.app.workspace.offref(this.pasteEvent);
-      this.pasteEvent = null;
+    if (this.changeEventRef) {
+      this.app.workspace.offref(this.changeEventRef);
+      this.changeEventRef = null;
     }
+    this.processedImages.clear(); // 清空已处理图片集合
   }
 
-  private async handlePasteEvent(event: ClipboardEvent, editor: Editor, view: MarkdownView) {
-    // 阻止默认粘贴行为
-    event.preventDefault();
-
-    // 检查剪贴板中的文件（图片）和文本
-    const clipboardData = event.clipboardData;
-    if (!clipboardData) {
-      return;
+  private handleEditorChange(editor: Editor) {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
     }
 
-    const pastedText = clipboardData.getData('text');
-    const items = clipboardData.items;
-    const itemsArray = Array.from(items);
+    this.debounceTimer = window.setTimeout(() => {
+      this.processEditorContent(editor);
+      this.debounceTimer = null;
+    }, 500); // 去抖动间隔，单位为毫秒
+  }
 
-    // 获取光标位置
-    const cursor = editor.getCursor();
+  private async processEditorContent(editor: Editor) {
+    const content = editor.getValue();
+    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
+    let match;
 
-    // 优先处理图片文件
-    for (const item of itemsArray) {
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) {
-          // 读取图片数据并进行 OCR 处理
-          const arrayBuffer = await file.arrayBuffer();
-          const base64Image = this.arrayBufferToBase64(arrayBuffer);
+    const promises = [];
 
-          // 调用 OCR 处理
-          const ocrText = await this.processImageData(base64Image);
-          if (ocrText) {
-            // 在粘贴位置插入 OCR 文本
-            editor.replaceRange(ocrText, cursor);
+    while ((match = imageLinkRegex.exec(content)) !== null) {
+      const fullMatch = match[0];
+      const imagePath = match[1] || match[2];
+      // 如果图片已经处理过，跳过
+      if (this.processedImages.has(fullMatch)) {
+        continue;
+      }
+      // 记录已处理的图片
+      this.processedImages.add(fullMatch);
+
+      const currentFilePath = this.app.workspace.getActiveFile()?.path;
+      if (!currentFilePath) {
+        continue;
+      }
+
+      promises.push(
+        this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
+          if (result) {
+            // 替换图片链接为 OCR 结果
+            const newContent = editor.getValue().replace(result.imageLink, result.ocrText);
+            editor.setValue(newContent);
           }
-        }
-        return; // 已处理图片，退出函数
-      }
+        })
+      );
     }
 
-    // 如果没有图片文件，检查文本内容
-    if (pastedText) {
-      // 检查粘贴的文本是否为图片链接
-      const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/;
-      const match = pastedText.match(imageLinkRegex);
+    await Promise.all(promises);
+  }
 
-      if (match) {
-        const imagePath = match[1] || match[2];
-        const currentFilePath = view.file?.path;
-        if (!currentFilePath) {
-          new Notice('无法获取当前文件路径');
-          return;
-        }
+  private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
+    // 等待图片文件加载完成
+    const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
 
-        // 等待图片文件加载完成
-        const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
-        if (!imageFile) {
-          new Notice(`无法找到图片文件：${imagePath}`);
-          return;
-        }
-
-        // 读取图片数据
-        const arrayBuffer = await this.app.vault.readBinary(imageFile);
-        const base64Image = this.arrayBufferToBase64(arrayBuffer);
-
-        // 调用 OCR 处理
-        const ocrText = await this.processImageData(base64Image);
-        if (ocrText) {
-          // 在粘贴位置插入 OCR 文本
-          editor.replaceRange(ocrText, cursor);
-        }
-        return;
-      } else {
-        // 如果不是图片链接，执行默认粘贴行为
-        editor.replaceRange(pastedText, cursor);
-      }
+    if (!imageFile) {
+      new Notice(`无法找到图片文件：${imagePath}`);
+      return null;
     }
+
+    // 读取图片数据
+    const arrayBuffer = await this.app.vault.readBinary(imageFile);
+    const base64Image = this.arrayBufferToBase64(arrayBuffer);
+
+    // 调用 OCR 处理
+    const processedText = await this.processImageData(base64Image);
+
+    if (!processedText) {
+      return null;
+    }
+
+    return { imageLink, ocrText: processedText };
   }
 
   private async waitForImageFile(imagePath: string, currentFilePath: string): Promise<TFile | null> {
@@ -220,6 +217,27 @@ export default class OCRPlugin extends Plugin {
     const processedText = this.removeBlanks(ocrText);
 
     return processedText;
+  }
+
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  private removeBlanks(input: string): string {
+    // 删除美元符号前后的空格
+    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
+    // 将 "\[" 或 "\]" 替换为 "$$"
+    result = result.replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
+    // 将 "\(" 或 "\)" 替换为 "$"
+    result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
+    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+    return result;
   }
 
   private async ocrSelectedImage(editor: Editor, view: MarkdownView) {
@@ -301,50 +319,6 @@ export default class OCRPlugin extends Plugin {
     editor.setValue(newContent);
 
     new Notice('所有图片已处理完成');
-  }
-
-  private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
-    // 等待图片文件加载完成
-    const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
-
-    if (!imageFile) {
-      new Notice(`无法找到图片文件：${imagePath}`);
-      return null;
-    }
-
-    // 读取图片数据
-    const arrayBuffer = await this.app.vault.readBinary(imageFile);
-    const base64Image = this.arrayBufferToBase64(arrayBuffer);
-
-    // 调用 OCR 处理
-    const processedText = await this.processImageData(base64Image);
-
-    if (!processedText) {
-      return null;
-    }
-
-    return { imageLink, ocrText: processedText };
-  }
-
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
-  }
-
-  private removeBlanks(input: string): string {
-    // 删除美元符号前后的空格
-    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
-    // 将 "\[" 或 "\]" 替换为 "$$"
-    result = result.replace(/\\\[/g, '$$$$$$').replace(/\\\]/g, '$$$$$$');
-    // 将 "\(" 或 "\)" 替换为 "$"
-    result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
-    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
-    return result;
   }
 }
 
