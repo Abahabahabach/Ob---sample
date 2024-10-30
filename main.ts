@@ -13,6 +13,10 @@ const DEFAULT_SETTINGS: OCRPluginSettings = {
 export default class OCRPlugin extends Plugin {
   settings: OCRPluginSettings;
 
+  private autoOCRMode: boolean = false;
+  private ribbonIconEl: HTMLElement;
+  private pasteEventHandler: EventListener;
+
   async onload() {
     console.log('Loading OCR Plugin');
 
@@ -34,11 +38,26 @@ export default class OCRPlugin extends Plugin {
       }
     });
 
+    // 添加 Ribbon 按钮
+    this.ribbonIconEl = this.addRibbonIcon('camera', 'Toggle Auto OCR on Paste', (evt: MouseEvent) => {
+      // 切换自动 OCR 模式
+      this.toggleAutoOCRMode();
+    });
+    // 设置初始状态的图标样式
+    this.updateRibbonIcon();
+
+    // 初始化 pasteEventHandler
+    this.pasteEventHandler = (event: Event) => {
+      this.handlePasteEvent(event as ClipboardEvent);
+    };
+
     this.addSettingTab(new OCRSettingTab(this.app, this));
   }
 
   onunload() {
     console.log('Unloading OCR Plugin');
+    // 确保注销粘贴事件监听器
+    this.stopListeningForPaste();
   }
 
   async loadSettings() {
@@ -47,6 +66,112 @@ export default class OCRPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  private toggleAutoOCRMode() {
+    this.autoOCRMode = !this.autoOCRMode;
+    this.updateRibbonIcon();
+
+    if (this.autoOCRMode) {
+      new Notice('自动 OCR 模式已开启');
+      this.startListeningForPaste();
+    } else {
+      new Notice('自动 OCR 模式已关闭');
+      this.stopListeningForPaste();
+    }
+  }
+
+  private updateRibbonIcon() {
+    if (this.autoOCRMode) {
+      // 激活状态，添加样式
+      this.ribbonIconEl.addClass('is-active');
+    } else {
+      // 未激活状态，移除样式
+      this.ribbonIconEl.removeClass('is-active');
+    }
+  }
+
+  private startListeningForPaste() {
+    // 注册粘贴事件监听器
+    window.addEventListener('paste', this.pasteEventHandler);
+  }
+
+  private stopListeningForPaste() {
+    // 注销粘贴事件监听器
+    window.removeEventListener('paste', this.pasteEventHandler);
+  }
+
+  private async handlePasteEvent(event: ClipboardEvent) {
+    // 检查当前是否聚焦在编辑器中
+    const activeLeaf = this.app.workspace.activeLeaf;
+    if (!activeLeaf || !(activeLeaf.view instanceof MarkdownView)) {
+      return;
+    }
+
+    const editor = activeLeaf.view.editor;
+
+    // 检查剪贴板中的文件（图片）
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) {
+      return;
+    }
+
+    const items = clipboardData.items;
+    const itemsArray = Array.from(items); // 转换为数组
+    for (const item of itemsArray) {
+      if (item.type.startsWith('image/')) {
+        event.preventDefault(); // 阻止默认的粘贴行为
+
+        const file = item.getAsFile();
+        if (file) {
+          // 读取图片数据并进行 OCR 处理
+          const arrayBuffer = await file.arrayBuffer();
+          const base64Image = this.arrayBufferToBase64(arrayBuffer);
+
+          // 调用 OCR 处理
+          const ocrText = await this.processImageData(base64Image);
+          if (ocrText) {
+            // 在光标位置插入 OCR 文本
+            editor.replaceSelection(ocrText);
+          }
+        }
+        break; // 只处理一个图片
+      }
+    }
+  }
+
+  private async processImageData(base64Image: string): Promise<string | null> {
+    // 调用 Mathpix API
+    const response = await fetch('https://api.mathpix.com/v3/text', {
+      method: 'POST',
+      headers: {
+        'app_id': this.settings.appId,
+        'app_key': this.settings.appKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        src: `data:image/png;base64,${base64Image}`,
+        formats: ['text']
+      })
+    });
+
+    if (!response.ok) {
+      new Notice('OCR 请求失败');
+      return null;
+    }
+
+    const result = await response.json();
+    const ocrText = result.text;
+
+    if (!ocrText) {
+      new Notice('未能识别出文本');
+      return null;
+    }
+
+    // 调用 removeBlanks 函数处理 OCR 结果
+    const processedText = this.removeBlanks(ocrText);
+
+    return processedText;
   }
 
   private async ocrSelectedImage(editor: Editor, view: MarkdownView) {
@@ -132,34 +257,11 @@ export default class OCRPlugin extends Plugin {
     const base64Image = this.arrayBufferToBase64(arrayBuffer);
 
     // 调用 Mathpix API
-    const response = await fetch('https://api.mathpix.com/v3/text', {
-      method: 'POST',
-      headers: {
-        'app_id': this.settings.appId,
-        'app_key': this.settings.appKey,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        src: `data:image/png;base64,${base64Image}`,
-        formats: ['text']
-      })
-    });
+    const processedText = await this.processImageData(base64Image);
 
-    if (!response.ok) {
-      new Notice(`OCR 请求失败：${imagePath}`);
+    if (!processedText) {
       return null;
     }
-
-    const result = await response.json();
-    const ocrText = result.text;
-
-    if (!ocrText) {
-      new Notice(`未能识别出文本：${imagePath}`);
-      return null;
-    }
-
-    // 调用 removeBlanks 函数处理 OCR 结果
-    const processedText = this.removeBlanks(ocrText);
 
     return { imageLink, ocrText: processedText };
   }
@@ -175,13 +277,10 @@ export default class OCRPlugin extends Plugin {
   }
 
   private removeBlanks(input: string): string {
-  // 删除美元符号前后的空格
-  let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
-  // 将 "\[" 或 "\]" 替换为 "$$"
-  result = result.replace(/\\\[/g, '$$$').replace(/\\\]/g, '$$$');
-  // 将 "\(" 或 "\)" 替换为 "$"
-  result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
-  result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
+    result = result.replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
+    result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
+    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
     return result;
   }
 }
