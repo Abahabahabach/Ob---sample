@@ -278,22 +278,21 @@ export default class OCRPlugin extends Plugin {
 
   
   private removeBlanks(input: string): string {
-    // 删除美元符号前后的空格
-    let result = input.replace(/\$(.*?)\$/gs, (match, p1) => `$${p1.trim()}$`);
+    // 删除美元符号前后的空格，匹配包括换行符在内的所有字符
+    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
   
-    // 将 "\[" 或 "\]" 替换为 "$$"
+    // 将 "\[" 和 "\]" 替换为 "$$"
     result = result.replace(/\\\[/g, '$$$$').replace(/\\\]/g, '$$$$');
   
-    // 将 "\(" 或 "\)" 替换为 "$"
+    // 将 "\(" 和 "\)" 替换为 "$"
     result = result.replace(/\\\(/g, '$$').replace(/\\\)/g, '$$');
   
-    // 移除公式内部的多余美元符号
+    // 移除公式内部的多余美元符号，匹配包括换行符在内的所有字符
     result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match, p1) => `$$${p1.replace(/\$/g, '').trim()}$$`);
-    result = result.replace(/\$([^\$]*?)\$/g, (match, p1) => `$${p1.replace(/\$/g, '').trim()}$`);
+    result = result.replace(/\$([\s\S]*?)\$/g, (match, p1) => `$${p1.replace(/\$/g, '').trim()}$`);
   
     return result;
   }
-  
 
 
  
