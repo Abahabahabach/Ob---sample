@@ -278,21 +278,28 @@ export default class OCRPlugin extends Plugin {
 
   
   private removeBlanks(input: string): string {
-    // 删除美元符号前后的空格，匹配包括换行符在内的所有字符
-    let result = input.replace(/\$(.*?)\$/g, (match, p1) => `$${p1.trim()}$`);
+    // 移除输入中不必要的空格和额外的 `$` 符号
+    let result = input;
   
-    // 将 "\[" 和 "\]" 替换为 "$$"
-    result = result.replace(/\\\[/g, '$$$$').replace(/\\\]/g, '$$$$');
+    // 1. 移除行间公式和行内公式中的多余空格
+    result = result.replace(/(\$+)\s*(.*?)\s*\$+/g, (match, p1, p2) => `${p1}${p2.trim()}${p1}`);
   
-    // 将 "\(" 和 "\)" 替换为 "$"
-    result = result.replace(/\\\(/g, '$$').replace(/\\\)/g, '$$');
+    // 2. 将 "\[" 和 "\]" 替换为 "$$"
+    result = result.replace(/\\\[/g, '$$').replace(/\\\]/g, '$$');
   
-    // 移除公式内部的多余美元符号，匹配包括换行符在内的所有字符
-    result = result.replace(/\$\$([\s\S]*?)\$\$/g, (match, p1) => `$$${p1.replace(/\$/g, '').trim()}$$`);
-    result = result.replace(/\$([\s\S]*?)\$/g, (match, p1) => `$${p1.replace(/\$/g, '').trim()}$`);
+    // 3. 将 "\(" 和 "\)" 替换为 "$"
+    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+  
+    // 4. 移除行间公式和行内公式内部的多余 `$` 符号
+    result = result.replace(/\$\$(.*?)\$\$/gs, (match, p1) => `$$${p1.replace(/\$/g, '').trim()}$$`);
+    result = result.replace(/\$(.*?)\$/gs, (match, p1) => `$${p1.replace(/\$/g, '').trim()}$`);
+  
+    // 5. 处理输入中可能存在的未配对或多余的 `$` 符号
+    result = result.replace(/^\$/, '').replace(/\$$/, '');
   
     return result;
   }
+  
 
 
  
