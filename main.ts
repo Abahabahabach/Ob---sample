@@ -137,7 +137,7 @@ export default class OCRPlugin extends Plugin {
         this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
           if (result) {
             // 替换图片链接为 OCR 结果
-            const newContent = editor.getValue().replace(result.imageLink, result.ocrText);
+            const newContent = editor.getValue().replace(result.imageLink, () => result.ocrText);
             editor.setValue(newContent);
           }
         })
@@ -230,16 +230,16 @@ export default class OCRPlugin extends Plugin {
   }
 
   private removeBlanks(input: string): string {
-    // 删除美元符号前后的空格
-    let result = input
+    let result = input;
     result = result.replace(/\$(.*?)\$/g, (_match, p1) => `$${p1.trim()}$`);
     // 将 "\[" 或 "\]" 替换为 "$$"
-    result = result.replace(/\\\[/g, '$$$$$').replace(/\\\]/g, '$$$$$');
+    result = result.replace(/\\\[/g, '$$$').replace(/\\\]/g, '$$$');
     // 将 "\(" 或 "\)" 替换为 "$"
-    result = result.replace(/\\\(\s/g, '$').replace(/\s\\\)/g, '$');
-    result = result.replace(/\\\(/g, '$').replace(/\\\)/g, '$');
+    result = result.replace(/\\\(\s/g, '$$').replace(/\s\\\)/g, '$$');
+    result = result.replace(/\\\(/g, '$$').replace(/\\\)/g, '$$');
     return result;
   }
+  
 
   private async ocrSelectedImage(editor: Editor, view: MarkdownView) {
     const selectedText = editor.getSelection();
@@ -313,7 +313,7 @@ export default class OCRPlugin extends Plugin {
     let newContent = content;
     for (const result of results) {
       if (result) {
-        newContent = newContent.replace(result.imageLink, result.ocrText);
+        newContent = newContent.replace(result.imageLink, () => result.ocrText);
       }
     }
 
