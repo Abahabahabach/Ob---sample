@@ -26,7 +26,7 @@ export default class OCRPlugin extends Plugin {
 
     this.addCommand({
       id: 'ocr-selected-image',
-      name: 'OCR 选中图片',
+      name: 'OCR selected image',
       editorCallback: async (editor: Editor, view: MarkdownView) => {
         await this.ocrSelectedImage(editor, view);
       }
@@ -34,14 +34,14 @@ export default class OCRPlugin extends Plugin {
 
     this.addCommand({
       id: 'ocr-all-images',
-      name: 'OCR 笔记中的所有图片',
+      name: 'OCR all images in current note',
       editorCallback: async (editor: Editor, view: MarkdownView) => {
         await this.ocrAllImagesInNote(editor, view);
       }
     });
 
     // 添加 Ribbon 按钮
-    this.ribbonIconEl = this.addRibbonIcon('camera', '切换自动 OCR 模式', (evt: MouseEvent) => {
+    this.ribbonIconEl = this.addRibbonIcon('camera', 'Toggle automatic OCR mode', (evt: MouseEvent) => {
       // 切换自动 OCR 模式
       this.toggleAutoOCRMode();
     });
@@ -70,10 +70,10 @@ export default class OCRPlugin extends Plugin {
     this.updateRibbonIcon();
 
     if (this.autoOCRMode) {
-      new Notice('自动 OCR 模式已开启');
+      new Notice('Automatic OCR mode is enabled.');
       this.startListeningForPaste();
     } else {
-      new Notice('自动 OCR 模式已关闭');
+      new Notice('Automatic OCR mode is disabled.');
       this.stopListeningForPaste();
     }
   }
@@ -152,7 +152,7 @@ export default class OCRPlugin extends Plugin {
     const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
 
     if (!imageFile) {
-      new Notice(`无法找到图片文件：${imagePath}`);
+      new Notice(`Unable to find the image file: ${imagePath}`);
       return null;
     }
 
@@ -201,7 +201,7 @@ export default class OCRPlugin extends Plugin {
     });
 
     if (!response.ok) {
-      new Notice('OCR 请求失败');
+      new Notice('OCR request failed');
       return null;
     }
 
@@ -209,7 +209,7 @@ export default class OCRPlugin extends Plugin {
     const ocrText = result.text;
 
     if (!ocrText) {
-      new Notice('未能识别出文本');
+      new Notice('Failed to OCR.');
       return null;
     }
 
@@ -245,7 +245,7 @@ export default class OCRPlugin extends Plugin {
     const selectedText = editor.getSelection();
 
     if (!selectedText) {
-      new Notice('请先选中一张图片的链接');
+      new Notice('Select the link of an image first.');
       return;
     }
 
@@ -254,7 +254,7 @@ export default class OCRPlugin extends Plugin {
     const match = selectedText.match(imageLinkRegex);
 
     if (!match) {
-      new Notice('选中的内容不是有效的图片链接');
+      new Notice('Invalid image link.');
       return;
     }
 
@@ -262,14 +262,14 @@ export default class OCRPlugin extends Plugin {
 
     const currentFilePath = view.file?.path;
     if (!currentFilePath) {
-      new Notice('无法获取当前文件路径');
+      new Notice('Unable to obtain the current file path.');
       return;
     }
 
     // 等待图片文件加载完成
     const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
     if (!imageFile) {
-      new Notice(`无法找到图片文件：${imagePath}`);
+      new Notice(`Unable to find image file: ${imagePath}`);
       return;
     }
 
@@ -291,7 +291,7 @@ export default class OCRPlugin extends Plugin {
 
     const currentFilePath = view.file?.path;
     if (!currentFilePath) {
-      new Notice('无法获取当前文件路径');
+      new Notice('Unable to obtain the current file path.');
       return;
     }
 
@@ -319,7 +319,7 @@ export default class OCRPlugin extends Plugin {
 
     editor.setValue(newContent);
 
-    new Notice('所有图片已处理完成');
+    new Notice('All images have been processed.');
   }
 }
 
@@ -336,13 +336,13 @@ class OCRSettingTab extends PluginSettingTab {
 
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'OCR 插件设置' });
+    containerEl.createEl('h2', { text: 'OCR Plugin Settings' });
 
     new Setting(containerEl)
       .setName('Mathpix App ID')
-      .setDesc('您的 Mathpix API App ID')
+      .setDesc('Your Mathpix API App ID')
       .addText(text => text
-        .setPlaceholder('请输入您的 App ID')
+        .setPlaceholder('Please enter your App ID.')
         .setValue(this.plugin.settings.appId)
         .onChange(async (value) => {
           this.plugin.settings.appId = value;
@@ -351,9 +351,9 @@ class OCRSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Mathpix App Key')
-      .setDesc('您的 Mathpix API App Key')
+      .setDesc('Your Mathpix API App Key')
       .addText(text => text
-        .setPlaceholder('请输入您的 App Key')
+        .setPlaceholder('Please enter your App Key')
         .setValue(this.plugin.settings.appKey)
         .onChange(async (value) => {
           this.plugin.settings.appKey = value;
