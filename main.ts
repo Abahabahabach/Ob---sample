@@ -1,4 +1,17 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, EventRef } from 'obsidian';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, EventRef, WorkspaceLeaf } from 'obsidian';
+import * as CodeMirror from 'codemirror';
+
+interface EditorWithCM extends Editor {
+  cm: CodeMirror.Editor;
+}
+
+// 扩展 CodeMirror 的类型定义
+declare module 'codemirror' {
+  interface Editor {
+    on(eventName: 'changes', handler: (instance: Editor, changes: CodeMirror.EditorChange[]) => void): void;
+    off(eventName: 'changes', handler: (instance: Editor, changes: CodeMirror.EditorChange[]) => void): void;
+  }
+}
 
 interface OCRPluginSettings {
   appId: string;
@@ -16,8 +29,8 @@ export default class OCRPlugin extends Plugin {
   private autoOCRMode: boolean = false;
   private ribbonIconEl: HTMLElement;
   private processedImages: Set<string> = new Set();
-  private debounceTimer: number | null = null;
-  private changeEventRef: EventRef | null = null;
+  private cmEditor: CodeMirror.Editor | null = null;
+  private changeHandler: (cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) => void;
 
   async onload() {
     console.log('Loading OCR Plugin');
@@ -54,7 +67,7 @@ export default class OCRPlugin extends Plugin {
   onunload() {
     console.log('Unloading OCR Plugin');
     // 在插件卸载时，确保注销事件监听器
-    this.stopListeningForPaste();
+    this.stopListeningForChanges();
   }
 
   async loadSettings() {
@@ -71,10 +84,10 @@ export default class OCRPlugin extends Plugin {
 
     if (this.autoOCRMode) {
       new Notice('Automatic OCR mode is enabled.');
-      this.startListeningForPaste();
+      this.startListeningForChanges();
     } else {
       new Notice('Automatic OCR mode is disabled.');
-      this.stopListeningForPaste();
+      this.stopListeningForChanges();
     }
   }
 
@@ -88,64 +101,87 @@ export default class OCRPlugin extends Plugin {
     }
   }
 
-  private startListeningForPaste() {
-    this.changeEventRef = this.app.workspace.on('editor-change', this.handleEditorChange.bind(this));
+  private startListeningForChanges() {
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', this.onActiveLeafChange.bind(this))
+    );
+    this.onActiveLeafChange(this.app.workspace.activeLeaf);
   }
 
-  private stopListeningForPaste() {
-    if (this.changeEventRef) {
-      this.app.workspace.offref(this.changeEventRef);
-      this.changeEventRef = null;
+  private onActiveLeafChange(leaf: WorkspaceLeaf | null) {
+    if (this.cmEditor && this.changeHandler) {
+      this.cmEditor.off('changes', this.changeHandler);
+    }
+    if (leaf && leaf.view instanceof MarkdownView) {
+      const editor = leaf.view.editor;
+      const cm = (editor as EditorWithCM).cm;
+
+      this.cmEditor = cm;
+      this.changeHandler = this.handleEditorChanges.bind(this);
+      cm.on('changes', this.changeHandler);
+    } else {
+      if (this.cmEditor && this.changeHandler) {
+        this.cmEditor.off('changes', this.changeHandler);
+      }
+      this.cmEditor = null;
+    }
+  }
+
+  private stopListeningForChanges() {
+    if (this.cmEditor && this.changeHandler) {
+      this.cmEditor.off('changes', this.changeHandler);
+      this.cmEditor = null;
     }
     this.processedImages.clear(); // 清空已处理图片集合
   }
 
-  private handleEditorChange(editor: Editor) {
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
-    }
-
-    this.debounceTimer = window.setTimeout(() => {
-      this.processEditorContent(editor);
-      this.debounceTimer = null;
-    }, 500); // 去抖动间隔，单位为毫秒
-  }
-
-  private async processEditorContent(editor: Editor) {
-    const content = editor.getValue();
-    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
-    let match;
-
-    const promises = [];
-
-    while ((match = imageLinkRegex.exec(content)) !== null) {
-      const fullMatch = match[0];
-      const imagePath = match[1] || match[2];
-      // 如果图片已经处理过，跳过
-      if (this.processedImages.has(fullMatch)) {
-        continue;
-      }
-      // 记录已处理的图片
-      this.processedImages.add(fullMatch);
-
-      const currentFilePath = this.app.workspace.getActiveFile()?.path;
-      if (!currentFilePath) {
-        continue;
+  private handleEditorChanges(cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) {
+    for (const change of changes) {
+      if (change.origin === 'setValue') {
+        continue; // 忽略整个内容被替换的情况
       }
 
-      promises.push(
-        this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
-          if (result) {
-            // 替换图片链接为 OCR 结果
-            const newContent = editor.getValue().replace(result.imageLink, () => result.ocrText);
-            editor.setValue(newContent);
+      if (change.text) {
+        const addedText = change.text.join('\n');
+        const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
+        let match;
+
+        while ((match = imageLinkRegex.exec(addedText)) !== null) {
+          const fullMatch = match[0];
+          const imagePath = match[1] || match[2];
+          const matchStartIndex = match.index;
+          const matchEndIndex = match.index + fullMatch.length;
+
+          // 如果图片已经处理过，跳过
+          if (this.processedImages.has(fullMatch)) {
+            continue;
           }
-        })
-      );
-    }
+          this.processedImages.add(fullMatch);
 
-    await Promise.all(promises);
+          const currentFilePath = this.app.workspace.getActiveFile()?.path;
+          if (!currentFilePath) {
+            continue;
+          }
+
+          this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
+            if (result) {
+              // 计算图片链接在编辑器中的位置
+              const changeStartIndex = cm.indexFromPos(change.from);
+              const fromIndex = changeStartIndex + matchStartIndex;
+              const toIndex = changeStartIndex + matchEndIndex;
+
+              const fromPos = cm.posFromIndex(fromIndex);
+              const toPos = cm.posFromIndex(toIndex);
+
+              // 替换图片链接为 OCR 结果
+              cm.replaceRange(result.ocrText, fromPos, toPos);
+            }
+          });
+        }
+      }
+    }
   }
+
 
   private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
     // 等待图片文件加载完成
@@ -239,7 +275,6 @@ export default class OCRPlugin extends Plugin {
     result = result.replace(/\\\(/g, '$$').replace(/\\\)/g, '$$');
     return result;
   }
-  
 
   private async ocrSelectedImage(editor: Editor, view: MarkdownView) {
     const selectedText = editor.getSelection();
@@ -361,3 +396,4 @@ class OCRSettingTab extends PluginSettingTab {
         }));
   }
 }
+
