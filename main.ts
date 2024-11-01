@@ -1,11 +1,12 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 
- 	// import gioJs from '@/util/gio.js'
- 	const { diffChars } = require('diff')
-    // 可能会提示 require 未定义，有两种方式：
-    //  1. 自行声明：declare const require: any
-    //  2. yarn add -D @types/node
+// 声明 require 以避免 TypeScript 报错
+declare const require: any;
 
+// 正确引入 diff 库
+const { diffChars } = require('diff');
+// 如果您更倾向于使用 ES6 模块，可以考虑安装 @types/node 并使用下面的导入方式
+// import { diffChars } from 'diff';
 
 interface OCRPluginSettings {
   appId: string;
@@ -22,13 +23,15 @@ export default class OCRPlugin extends Plugin {
 
   private autoOCRMode: boolean = false;
   private ribbonIconEl: HTMLElement;
-  private processedImages: Set<string> = new Set();
+  // 将 processedImages 更改为 per-note 结构
+  private processedImagesPerNote: { [notePath: string]: Set<string> } = {};
   private previousContent: string = '';
 
   async onload() {
     console.log('Loading OCR Plugin');
 
     await this.loadSettings();
+    await this.loadProcessedImages(); // 加载已处理的图片记录
 
     this.addCommand({
       id: 'ocr-selected-image',
@@ -61,6 +64,7 @@ export default class OCRPlugin extends Plugin {
     console.log('Unloading OCR Plugin');
     // 在插件卸载时，确保注销事件监听器
     this.stopListeningForChanges();
+    this.saveProcessedImages(); // 保存已处理的图片记录
   }
 
   async loadSettings() {
@@ -71,6 +75,33 @@ export default class OCRPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  // 加载已处理的图片记录
+  private async loadProcessedImages() {
+    const data = await this.loadData();
+    if (data && data.processedImagesPerNote) {
+      this.processedImagesPerNote = data.processedImagesPerNote;
+      // 将每个数组转换为 Set
+      for (const notePath in this.processedImagesPerNote) {
+        this.processedImagesPerNote[notePath] = new Set(this.processedImagesPerNote[notePath]);
+      }
+      console.log('Loaded processedImagesPerNote:', this.processedImagesPerNote);
+    }
+  }
+
+  // 保存已处理的图片记录
+  private async saveProcessedImages() {
+    // 将 Set 转换为数组以便序列化
+    const dataToSave: any = {
+      ...this.settings,
+      processedImagesPerNote: {}
+    };
+    for (const notePath in this.processedImagesPerNote) {
+      dataToSave.processedImagesPerNote[notePath] = Array.from(this.processedImagesPerNote[notePath]);
+    }
+    await this.saveData(dataToSave);
+    console.log('Saved processedImagesPerNote:', this.processedImagesPerNote);
+  }
+
   private toggleAutoOCRMode() {
     this.autoOCRMode = !this.autoOCRMode;
     this.updateRibbonIcon();
@@ -78,9 +109,22 @@ export default class OCRPlugin extends Plugin {
     if (this.autoOCRMode) {
       new Notice('Automatic OCR mode is enabled.');
       this.startListeningForChanges();
+
+      // 在开启自动 OCR 时，初始化 previousContent 为当前编辑器的内容
+      const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (activeView) {
+        this.previousContent = activeView.editor.getValue();
+        console.log('Initialized previousContent on enabling auto OCR.');
+      } else {
+        this.previousContent = '';
+        console.log('No active MarkdownView found. Set previousContent to empty string.');
+      }
     } else {
       new Notice('Automatic OCR mode is disabled.');
       this.stopListeningForChanges();
+
+      // 关闭自动 OCR 时，不清空 previousContent
+      console.log('Auto OCR mode disabled. previousContent retained.');
     }
   }
 
@@ -103,12 +147,33 @@ export default class OCRPlugin extends Plugin {
 
   private stopListeningForChanges() {
     console.log('stopListeningForChanges called');
-    this.processedImages.clear(); // 清空已处理图片集合
-    this.previousContent = ''; // 清空之前的内容
+    this.processedImagesPerNote = {}; // 清空已处理图片集合
+    this.saveProcessedImages(); // 保存清空后的记录
+    // 不再清空 previousContent
+    console.log('previousContent retained:', this.previousContent);
   }
 
-  private handleEditorChange(editor: Editor) {
+  private async handleEditorChange(editor: Editor) {
     console.log('handleEditorChange called');
+
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!activeView) {
+      console.log('No active MarkdownView found.');
+      return;
+    }
+
+    const currentFile = activeView.file;
+    if (!currentFile) {
+      console.log('No active file found.');
+      return;
+    }
+
+    const currentFilePath = currentFile.path;
+
+    // 获取或初始化当前笔记的 processedImages 集合
+    if (!this.processedImagesPerNote[currentFilePath]) {
+      this.processedImagesPerNote[currentFilePath] = new Set();
+    }
 
     // 获取当前内容
     const currentContent = editor.getValue();
@@ -116,43 +181,57 @@ export default class OCRPlugin extends Plugin {
     // 比较前后内容，获取新增的部分
     const addedText = this.getAddedText(this.previousContent, currentContent);
 
-    // 更新 previousContent
-    this.previousContent = currentContent;
-
-    // 如果没有新增内容，直接返回
+    // 如果没有新增内容，更新 previousContent 并返回
     if (!addedText) {
+      this.previousContent = currentContent; // 更新 previousContent
+      console.log('No added text detected. Updated previousContent.');
       return;
     }
 
+    console.log('Added text detected:', addedText);
+
     // 在新增的文本中查找图片链接
     const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
-    let match;
+    let match: RegExpExecArray | null;
+
+    const processingPromises: Promise<void>[] = [];
 
     while ((match = imageLinkRegex.exec(addedText)) !== null) {
       const fullMatch = match[0];
       const imagePath = match[1] || match[2];
 
+      // 获取当前笔记的 processedImages 集合
+      const processedImages = this.processedImagesPerNote[currentFilePath];
+
       // 如果图片已经处理过，跳过
-      if (this.processedImages.has(fullMatch)) {
+      if (processedImages.has(fullMatch)) {
+        console.log(`Image already processed in this note: ${fullMatch}`);
         continue;
       }
-      this.processedImages.add(fullMatch);
+      processedImages.add(fullMatch);
 
-      const currentFilePath = this.app.workspace.getActiveFile()?.path;
-      if (!currentFilePath) {
-        continue;
-      }
-
-      this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
+      // 处理图片并替换链接
+      const promise = this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
         if (result) {
           // 替换图片链接为 OCR 结果
-          const newContent = editor.getValue().replace(result.imageLink, () => result.ocrText);
+          const newContent = editor.getValue().replace(result.imageLink, result.ocrText);
           editor.setValue(newContent);
-          // 更新 previousContent
-          this.previousContent = newContent;
+          console.log(`Replaced image link with OCR text: ${result.imageLink}`);
         }
       });
+
+      processingPromises.push(promise);
     }
+
+    // 等待所有图片处理完成
+    await Promise.all(processingPromises);
+
+    // 在处理完所有新增内容后，更新 previousContent
+    this.previousContent = editor.getValue();
+    console.log('Updated previousContent after processing.');
+
+    // 保存 processedImagesPerNote
+    await this.saveProcessedImages();
   }
 
   private getAddedText(oldText: string, newText: string): string {
@@ -223,6 +302,7 @@ export default class OCRPlugin extends Plugin {
 
     if (!response.ok) {
       new Notice('OCR request failed');
+      console.error('OCR request failed with status:', response.status);
       return null;
     }
 
@@ -231,6 +311,7 @@ export default class OCRPlugin extends Plugin {
 
     if (!ocrText) {
       new Notice('Failed to OCR.');
+      console.error('OCR response did not contain text.');
       return null;
     }
 
@@ -286,6 +367,20 @@ export default class OCRPlugin extends Plugin {
       return;
     }
 
+    // 获取或初始化当前笔记的 processedImages 集合
+    if (!this.processedImagesPerNote[currentFilePath]) {
+      this.processedImagesPerNote[currentFilePath] = new Set();
+    }
+
+    const processedImages = this.processedImagesPerNote[currentFilePath];
+
+    // 检查图片是否已处理
+    if (processedImages.has(selectedText)) {
+      new Notice('This image has already been processed.');
+      return;
+    }
+    processedImages.add(selectedText);
+
     // 等待图片文件加载完成
     const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
     if (!imageFile) {
@@ -303,6 +398,12 @@ export default class OCRPlugin extends Plugin {
     if (processedText) {
       // 替换选中的内容为 OCR 结果
       editor.replaceSelection(processedText);
+      // 更新 previousContent
+      this.previousContent = editor.getValue();
+      console.log('Replaced selected image link with OCR text.');
+
+      // 保存 processedImagesPerNote
+      await this.saveProcessedImages();
     }
   }
 
@@ -315,14 +416,28 @@ export default class OCRPlugin extends Plugin {
       return;
     }
 
+    // 获取或初始化当前笔记的 processedImages 集合
+    if (!this.processedImagesPerNote[currentFilePath]) {
+      this.processedImagesPerNote[currentFilePath] = new Set();
+    }
+
+    const processedImages = this.processedImagesPerNote[currentFilePath];
+
     // 正则表达式匹配所有图片链接
     const imageLinkRegex = /(!\[\[([^\]]+)\]\])|(!\[[^\]]*\]\(([^)]+)\))/g;
     let match;
-    const promises = [];
+    const promises: Promise<{ imageLink: string; ocrText: string } | null>[] = [];
 
     while ((match = imageLinkRegex.exec(content)) !== null) {
       const fullMatch = match[0];
       const imagePath = match[2] || match[4];
+
+      // 跳过已处理的图片
+      if (processedImages.has(fullMatch)) {
+        console.log(`Image already processed in this note: ${fullMatch}`);
+        continue;
+      }
+      processedImages.add(fullMatch);
 
       promises.push(this.processImage(fullMatch, imagePath, currentFilePath));
     }
@@ -333,11 +448,19 @@ export default class OCRPlugin extends Plugin {
     let newContent = content;
     for (const result of results) {
       if (result) {
-        newContent = newContent.replace(result.imageLink, () => result.ocrText);
+        newContent = newContent.replace(result.imageLink, result.ocrText);
+        console.log(`Replaced image link with OCR text: ${result.imageLink}`);
       }
     }
 
     editor.setValue(newContent);
+
+    // 更新 previousContent
+    this.previousContent = newContent;
+    console.log('Replaced all image links with OCR text.');
+
+    // 保存 processedImagesPerNote
+    await this.saveProcessedImages();
 
     new Notice('All images have been processed.');
   }
