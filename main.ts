@@ -5,14 +5,6 @@ interface EditorWithCM extends Editor {
   cm: CodeMirror.Editor;
 }
 
-// 扩展 CodeMirror 的类型定义
-declare module 'codemirror' {
-  interface Editor {
-    on(eventName: 'changes', handler: (instance: Editor, changes: CodeMirror.EditorChange[]) => void): void;
-    off(eventName: 'changes', handler: (instance: Editor, changes: CodeMirror.EditorChange[]) => void): void;
-  }
-}
-
 interface OCRPluginSettings {
   appId: string;
   appKey: string;
@@ -30,7 +22,7 @@ export default class OCRPlugin extends Plugin {
   private ribbonIconEl: HTMLElement;
   private processedImages: Set<string> = new Set();
   private cmEditor: CodeMirror.Editor | null = null;
-  private changeHandler: (cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) => void;
+  private changeHandler: ((cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) => void) | null = null;
 
   async onload() {
     console.log('Loading OCR Plugin');
@@ -102,6 +94,7 @@ export default class OCRPlugin extends Plugin {
   }
 
   private startListeningForChanges() {
+    console.log('startListeningForChanges called');
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', this.onActiveLeafChange.bind(this))
     );
@@ -109,8 +102,9 @@ export default class OCRPlugin extends Plugin {
   }
 
   private onActiveLeafChange(leaf: WorkspaceLeaf | null) {
+    console.log('onActiveLeafChange called', leaf);
     if (this.cmEditor && this.changeHandler) {
-      this.cmEditor.off('changes', this.changeHandler);
+      (this.cmEditor as any).off('changes', this.changeHandler);
     }
     if (leaf && leaf.view instanceof MarkdownView) {
       const editor = leaf.view.editor;
@@ -118,24 +112,28 @@ export default class OCRPlugin extends Plugin {
 
       this.cmEditor = cm;
       this.changeHandler = this.handleEditorChanges.bind(this);
-      cm.on('changes', this.changeHandler);
+      (cm as any).on('changes', this.changeHandler);
     } else {
       if (this.cmEditor && this.changeHandler) {
-        this.cmEditor.off('changes', this.changeHandler);
+        (this.cmEditor as any).off('changes', this.changeHandler);
       }
       this.cmEditor = null;
+      this.changeHandler = null;
     }
   }
 
   private stopListeningForChanges() {
+    console.log('stopListeningForChanges called');
     if (this.cmEditor && this.changeHandler) {
-      this.cmEditor.off('changes', this.changeHandler);
+      (this.cmEditor as any).off('changes', this.changeHandler);
       this.cmEditor = null;
+      this.changeHandler = null;
     }
     this.processedImages.clear(); // 清空已处理图片集合
   }
 
   private handleEditorChanges(cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) {
+    console.log('handleEditorChanges called');
     for (const change of changes) {
       if (change.origin === 'setValue') {
         continue; // 忽略整个内容被替换的情况
@@ -396,4 +394,3 @@ class OCRSettingTab extends PluginSettingTab {
         }));
   }
 }
-
