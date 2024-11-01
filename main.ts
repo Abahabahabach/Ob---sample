@@ -1,9 +1,4 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, EventRef, WorkspaceLeaf } from 'obsidian';
-import * as CodeMirror from 'codemirror';
-
-interface EditorWithCM extends Editor {
-  cm: CodeMirror.Editor;
-}
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, EventRef } from 'obsidian';
 
 interface OCRPluginSettings {
   appId: string;
@@ -21,8 +16,6 @@ export default class OCRPlugin extends Plugin {
   private autoOCRMode: boolean = false;
   private ribbonIconEl: HTMLElement;
   private processedImages: Set<string> = new Set();
-  private cmEditor: CodeMirror.Editor | null = null;
-  private changeHandler: ((cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) => void) | null = null;
 
   async onload() {
     console.log('Loading OCR Plugin');
@@ -96,90 +89,51 @@ export default class OCRPlugin extends Plugin {
   private startListeningForChanges() {
     console.log('startListeningForChanges called');
     this.registerEvent(
-      this.app.workspace.on('active-leaf-change', this.onActiveLeafChange.bind(this))
+      this.app.workspace.on('editor-change', this.handleEditorChange.bind(this))
     );
-    this.onActiveLeafChange(this.app.workspace.activeLeaf);
-  }
-
-  private onActiveLeafChange(leaf: WorkspaceLeaf | null) {
-    console.log('onActiveLeafChange called', leaf);
-    if (this.cmEditor && this.changeHandler) {
-      (this.cmEditor as any).off('changes', this.changeHandler);
-    }
-    if (leaf && leaf.view instanceof MarkdownView) {
-      const editor = leaf.view.editor;
-      const cm = (editor as EditorWithCM).cm;
-
-      this.cmEditor = cm;
-      this.changeHandler = this.handleEditorChanges.bind(this);
-      (cm as any).on('changes', this.changeHandler);
-    } else {
-      if (this.cmEditor && this.changeHandler) {
-        (this.cmEditor as any).off('changes', this.changeHandler);
-      }
-      this.cmEditor = null;
-      this.changeHandler = null;
-    }
   }
 
   private stopListeningForChanges() {
     console.log('stopListeningForChanges called');
-    if (this.cmEditor && this.changeHandler) {
-      (this.cmEditor as any).off('changes', this.changeHandler);
-      this.cmEditor = null;
-      this.changeHandler = null;
-    }
+    // Obsidian 会自动处理事件注销，但如果需要，可以手动调用 off 方法
+    // this.app.workspace.off('editor-change', this.handleEditorChange.bind(this));
     this.processedImages.clear(); // 清空已处理图片集合
   }
 
-  private handleEditorChanges(cm: CodeMirror.Editor, changes: CodeMirror.EditorChange[]) {
-    console.log('handleEditorChanges called');
-    for (const change of changes) {
-      if (change.origin === 'setValue') {
-        continue; // 忽略整个内容被替换的情况
+  private handleEditorChange(editor: Editor) {
+    console.log('handleEditorChange called');
+
+    // 获取编辑器的内容
+    const content = editor.getValue();
+
+    // 查找新增的图片链接
+    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
+    let match;
+
+    while ((match = imageLinkRegex.exec(content)) !== null) {
+      const fullMatch = match[0];
+      const imagePath = match[1] || match[2];
+
+      // 如果图片已经处理过，跳过
+      if (this.processedImages.has(fullMatch)) {
+        continue;
+      }
+      this.processedImages.add(fullMatch);
+
+      const currentFilePath = this.app.workspace.getActiveFile()?.path;
+      if (!currentFilePath) {
+        continue;
       }
 
-      if (change.text) {
-        const addedText = change.text.join('\n');
-        const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
-        let match;
-
-        while ((match = imageLinkRegex.exec(addedText)) !== null) {
-          const fullMatch = match[0];
-          const imagePath = match[1] || match[2];
-          const matchStartIndex = match.index;
-          const matchEndIndex = match.index + fullMatch.length;
-
-          // 如果图片已经处理过，跳过
-          if (this.processedImages.has(fullMatch)) {
-            continue;
-          }
-          this.processedImages.add(fullMatch);
-
-          const currentFilePath = this.app.workspace.getActiveFile()?.path;
-          if (!currentFilePath) {
-            continue;
-          }
-
-          this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
-            if (result) {
-              // 计算图片链接在编辑器中的位置
-              const changeStartIndex = cm.indexFromPos(change.from);
-              const fromIndex = changeStartIndex + matchStartIndex;
-              const toIndex = changeStartIndex + matchEndIndex;
-
-              const fromPos = cm.posFromIndex(fromIndex);
-              const toPos = cm.posFromIndex(toIndex);
-
-              // 替换图片链接为 OCR 结果
-              cm.replaceRange(result.ocrText, fromPos, toPos);
-            }
-          });
+      this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
+        if (result) {
+          // 替换图片链接为 OCR 结果
+          const newContent = editor.getValue().replace(result.imageLink, () => result.ocrText);
+          editor.setValue(newContent);
         }
-      }
+      });
     }
   }
-
 
   private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
     // 等待图片文件加载完成
