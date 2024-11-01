@@ -1,7 +1,16 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import {
+  App,
+  Editor,
+  MarkdownView,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+  TFile,
+  EventRef
+} from 'obsidian';
 
- 	const { diffChars } = require('diff')
-
+const { diffChars } = require('diff');
 
 interface OCRPluginSettings {
   appId: string;
@@ -20,6 +29,7 @@ export default class OCRPlugin extends Plugin {
   private ribbonIconEl: HTMLElement;
   private processedImages: Set<string> = new Set();
   private previousContent: string = '';
+  private editorChangeEventRef: EventRef | null = null;
 
   async onload() {
     console.log('Loading OCR Plugin');
@@ -42,12 +52,12 @@ export default class OCRPlugin extends Plugin {
       }
     });
 
-    // 添加 Ribbon 按钮
+    // Add Ribbon button
     this.ribbonIconEl = this.addRibbonIcon('camera', 'Toggle automatic OCR mode', (evt: MouseEvent) => {
-      // 切换自动 OCR 模式
+      // Toggle automatic OCR mode
       this.toggleAutoOCRMode();
     });
-    // 设置初始状态的图标样式
+    // Set initial icon style
     this.updateRibbonIcon();
 
     this.addSettingTab(new OCRSettingTab(this.app, this));
@@ -55,7 +65,7 @@ export default class OCRPlugin extends Plugin {
 
   onunload() {
     console.log('Unloading OCR Plugin');
-    // 在插件卸载时，确保注销事件监听器
+    // Unregister event listeners when the plugin is unloaded
     this.stopListeningForChanges();
   }
 
@@ -82,53 +92,71 @@ export default class OCRPlugin extends Plugin {
 
   private updateRibbonIcon() {
     if (this.autoOCRMode) {
-      // 激活状态，添加样式
+      // Active state, add style
       this.ribbonIconEl.addClass('is-active');
     } else {
-      // 未激活状态，移除样式
+      // Inactive state, remove style
       this.ribbonIconEl.removeClass('is-active');
     }
   }
 
   private startListeningForChanges() {
     console.log('startListeningForChanges called');
-    this.registerEvent(
-      this.app.workspace.on('editor-change', this.handleEditorChange.bind(this))
-    );
+
+    // Initialize previousContent with current editor content
+    const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+    if (editor) {
+      this.previousContent = editor.getValue();
+    } else {
+      this.previousContent = '';
+    }
+
+    // Register the event listener if not already registered
+    if (!this.editorChangeEventRef) {
+      this.editorChangeEventRef = this.app.workspace.on('editor-change', this.handleEditorChange.bind(this));
+    }
   }
 
   private stopListeningForChanges() {
     console.log('stopListeningForChanges called');
-    this.processedImages.clear(); // 清空已处理图片集合
-    this.previousContent = ''; // 清空之前的内容
+
+    // Unregister the event listener if it exists
+    if (this.editorChangeEventRef) {
+      this.app.workspace.offref(this.editorChangeEventRef);
+      this.editorChangeEventRef = null;
+    }
+
+    // Clear processed images and previous content
+    this.processedImages.clear();
+    this.previousContent = '';
   }
 
   private handleEditorChange(editor: Editor) {
     console.log('handleEditorChange called');
 
-    // 获取当前内容
+    // Get current content
     const currentContent = editor.getValue();
 
-    // 比较前后内容，获取新增的部分
+    // Compare old and new content to get the added text
     const addedText = this.getAddedText(this.previousContent, currentContent);
 
-    // 更新 previousContent
+    // Update previousContent
     this.previousContent = currentContent;
 
-    // 如果没有新增内容，直接返回
+    // If there's no new content, return
     if (!addedText) {
       return;
     }
 
-    // 在新增的文本中查找图片链接
-    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
+    // Find image links in the added text
+    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.+?)\)/g;
     let match;
 
     while ((match = imageLinkRegex.exec(addedText)) !== null) {
       const fullMatch = match[0];
       const imagePath = match[1] || match[2];
 
-      // 如果图片已经处理过，跳过
+      // If the image has already been processed, skip it
       if (this.processedImages.has(fullMatch)) {
         continue;
       }
@@ -141,10 +169,10 @@ export default class OCRPlugin extends Plugin {
 
       this.processImage(fullMatch, imagePath, currentFilePath).then(result => {
         if (result) {
-          // 替换图片链接为 OCR 结果
+          // Replace image link with OCR result
           const newContent = editor.getValue().replace(result.imageLink, () => result.ocrText);
           editor.setValue(newContent);
-          // 更新 previousContent
+          // Update previousContent
           this.previousContent = newContent;
         }
       });
@@ -165,7 +193,7 @@ export default class OCRPlugin extends Plugin {
   }
 
   private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
-    // 等待图片文件加载完成
+    // Wait for image file to be loaded
     const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
 
     if (!imageFile) {
@@ -173,11 +201,11 @@ export default class OCRPlugin extends Plugin {
       return null;
     }
 
-    // 读取图片数据
+    // Read image data
     const arrayBuffer = await this.app.vault.readBinary(imageFile);
     const base64Image = this.arrayBufferToBase64(arrayBuffer);
 
-    // 调用 OCR 处理
+    // Perform OCR
     const processedText = await this.processImageData(base64Image);
 
     if (!processedText) {
@@ -188,22 +216,22 @@ export default class OCRPlugin extends Plugin {
   }
 
   private async waitForImageFile(imagePath: string, currentFilePath: string): Promise<TFile | null> {
-    const maxRetries = 10; // 最大重试次数
-    const retryInterval = 500; // 每次重试间隔，毫秒
+    const maxRetries = 10; // Maximum number of retries
+    const retryInterval = 500; // Retry interval in milliseconds
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const imageFile = this.app.metadataCache.getFirstLinkpathDest(imagePath, currentFilePath) as TFile;
       if (imageFile) {
         return imageFile;
       }
-      // 等待一段时间后重试
+      // Wait for a while before retrying
       await new Promise(resolve => setTimeout(resolve, retryInterval));
     }
     return null;
   }
 
   private async processImageData(base64Image: string): Promise<string | null> {
-    // 调用 Mathpix API
+    // Call Mathpix API
     const response = await fetch('https://api.mathpix.com/v3/text', {
       method: 'POST',
       headers: {
@@ -230,7 +258,7 @@ export default class OCRPlugin extends Plugin {
       return null;
     }
 
-    // 调用 removeBlanks 函数处理 OCR 结果
+    // Process OCR result with removeBlanks function
     const processedText = this.removeBlanks(ocrText);
 
     return processedText;
@@ -248,12 +276,12 @@ export default class OCRPlugin extends Plugin {
 
   private removeBlanks(input: string): string {
     let result = input;
+    // Replace inline math delimiters and trim
     result = result.replace(/\$(.*?)\$/g, (_match, p1) => `$${p1.trim()}$`);
-    // 将 "\[" 或 "\]" 替换为 "$$"
-    result = result.replace(/\\\[/g, '$$$').replace(/\\\]/g, '$$$');
-    // 将 "\(" 或 "\)" 替换为 "$"
-    result = result.replace(/\\\(\s/g, '$$').replace(/\s\\\)/g, '$$');
-    result = result.replace(/\\\(/g, '$$').replace(/\\\)/g, '$$');
+    // Replace display math delimiters with inline math delimiters
+    result = result.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_match, p1) => `$$${p1.trim()}$$`);
+    // Replace \( and \) with inline math delimiters
+    result = result.replace(/\\\(\s*([\s\S]*?)\s*\\\)/g, (_match, p1) => `$${p1.trim()}$`);
     return result;
   }
 
@@ -265,8 +293,8 @@ export default class OCRPlugin extends Plugin {
       return;
     }
 
-    // 检查选中的文本是否为图片链接
-    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/;
+    // Check if the selected text is an image link
+    const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.+?)\)/;
     const match = selectedText.match(imageLinkRegex);
 
     if (!match) {
@@ -282,22 +310,22 @@ export default class OCRPlugin extends Plugin {
       return;
     }
 
-    // 等待图片文件加载完成
+    // Wait for image file to be loaded
     const imageFile = await this.waitForImageFile(imagePath, currentFilePath);
     if (!imageFile) {
       new Notice(`Unable to find image file: ${imagePath}`);
       return;
     }
 
-    // 读取图片数据
+    // Read image data
     const arrayBuffer = await this.app.vault.readBinary(imageFile);
     const base64Image = this.arrayBufferToBase64(arrayBuffer);
 
-    // 调用 OCR 处理
+    // Perform OCR
     const processedText = await this.processImageData(base64Image);
 
     if (processedText) {
-      // 替换选中的内容为 OCR 结果
+      // Replace the selected content with OCR result
       editor.replaceSelection(processedText);
     }
   }
@@ -311,8 +339,8 @@ export default class OCRPlugin extends Plugin {
       return;
     }
 
-    // 正则表达式匹配所有图片链接
-    const imageLinkRegex = /(!\[\[([^\]]+)\]\])|(!\[[^\]]*\]\(([^)]+)\))/g;
+    // Regular expression to match all image links
+    const imageLinkRegex = /(!\[\[([^\]]+)\]\])|(!\[[^\]]*\]\((.+?)\))/g;
     let match;
     const promises = [];
 
@@ -325,7 +353,7 @@ export default class OCRPlugin extends Plugin {
 
     const results = await Promise.all(promises);
 
-    // 将内容中的图片链接替换为 OCR 结果
+    // Replace image links with OCR results in the content
     let newContent = content;
     for (const result of results) {
       if (result) {
