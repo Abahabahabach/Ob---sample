@@ -1,4 +1,11 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile, EventRef } from 'obsidian';
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+
+ 	// import gioJs from '@/util/gio.js'
+ 	const { diffChars } = require('diff')
+    // 可能会提示 require 未定义，有两种方式：
+    //  1. 自行声明：declare const require: any
+    //  2. yarn add -D @types/node
+
 
 interface OCRPluginSettings {
   appId: string;
@@ -16,6 +23,7 @@ export default class OCRPlugin extends Plugin {
   private autoOCRMode: boolean = false;
   private ribbonIconEl: HTMLElement;
   private processedImages: Set<string> = new Set();
+  private previousContent: string = '';
 
   async onload() {
     console.log('Loading OCR Plugin');
@@ -95,22 +103,32 @@ export default class OCRPlugin extends Plugin {
 
   private stopListeningForChanges() {
     console.log('stopListeningForChanges called');
-    // Obsidian 会自动处理事件注销，但如果需要，可以手动调用 off 方法
-    // this.app.workspace.off('editor-change', this.handleEditorChange.bind(this));
     this.processedImages.clear(); // 清空已处理图片集合
+    this.previousContent = ''; // 清空之前的内容
   }
 
   private handleEditorChange(editor: Editor) {
     console.log('handleEditorChange called');
 
-    // 获取编辑器的内容
-    const content = editor.getValue();
+    // 获取当前内容
+    const currentContent = editor.getValue();
 
-    // 查找新增的图片链接
+    // 比较前后内容，获取新增的部分
+    const addedText = this.getAddedText(this.previousContent, currentContent);
+
+    // 更新 previousContent
+    this.previousContent = currentContent;
+
+    // 如果没有新增内容，直接返回
+    if (!addedText) {
+      return;
+    }
+
+    // 在新增的文本中查找图片链接
     const imageLinkRegex = /!\[\[([^\]]+)\]\]|!\[.*?\]\((.*?)\)/g;
     let match;
 
-    while ((match = imageLinkRegex.exec(content)) !== null) {
+    while ((match = imageLinkRegex.exec(addedText)) !== null) {
       const fullMatch = match[0];
       const imagePath = match[1] || match[2];
 
@@ -130,9 +148,24 @@ export default class OCRPlugin extends Plugin {
           // 替换图片链接为 OCR 结果
           const newContent = editor.getValue().replace(result.imageLink, () => result.ocrText);
           editor.setValue(newContent);
+          // 更新 previousContent
+          this.previousContent = newContent;
         }
       });
     }
+  }
+
+  private getAddedText(oldText: string, newText: string): string {
+    const changes = diffChars(oldText, newText);
+    let addedText = '';
+
+    for (const part of changes) {
+      if (part.added) {
+        addedText += part.value;
+      }
+    }
+
+    return addedText;
   }
 
   private async processImage(imageLink: string, imagePath: string, currentFilePath: string) {
